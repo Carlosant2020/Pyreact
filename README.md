@@ -88,6 +88,21 @@ python examples/counter.py
 - `use_effect(fn, deps=None)` → roda `fn()` depois do render, quando `deps` mudam (`None` = toda renderização). Se `fn` retornar uma função, ela é usada como cleanup antes do próximo efeito.
 - `use_memo(fn, deps)` → memoiza o resultado de `fn()` enquanto `deps` não mudar.
 
+## Rodando os testes
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+São 49 testes cobrindo cada módulo isoladamente (`vdom`, `hooks`,
+`reconciler`, `renderer`, `diff`) e alguns testes de integração via
+`Session` (SSR inicial → clique → patch mínimo, `use_effect` disparando
+no momento certo, estado persistindo entre eventos). Um dos testes do
+`reconciler` documenta explicitamente a limitação de reordenação de listas
+citada abaixo, pra ela não passar despercebida se alguém tentar consertar
+no futuro.
+
 ## Limitações conhecidas (é um "mini" React de verdade)
 
 - **Diff de listas é por posição**, não por `key` para reordenação — itens que só mudam de lugar são recriados em vez de movidos. Bom o suficiente para listas que crescem/encolhem no fim ou têm itens editados no lugar.
