@@ -15,11 +15,11 @@ from .component import ComponentInstance
 
 
 def _child_slot(vnode: VNode, index: int) -> str:
+    """Segmento de identidade de um filho. Com `key`, a identidade não
+    depende mais da posição — é isso que permite mover o item de lugar
+    sem perder estado nem forçar recriação no DOM."""
     if vnode.key is not None:
         return f"k:{vnode.key}"
-    if vnode.is_component():
-        name = getattr(vnode.type, "__qualname__", "Component")
-        return f"c:{name}"
     return f"i:{index}"
 
 
@@ -31,40 +31,52 @@ def resolve_tree(root_vnode: VNode, session: "Session") -> VNode:
                          session=session, visited=visited)
     stale = [k for k in session.instances if k not in visited]
     for k in stale:
-        del session.instances[k]
+        session.instances.pop(k).unmount()
     return resolved
 
 
-def _resolve(vnode: VNode, own_path: list[str], registry: dict, session, visited: set) -> VNode:
+def _resolve(vnode: VNode, own_path: list[str], registry: dict, session, visited: set,
+             depth: int = 0) -> VNode:
     if vnode.is_text():
         return vnode
 
     if vnode.is_component():
-        path_key = "/".join(own_path)
+        # A chave inclui a profundidade de aninhamento: um componente que
+        # retorna outro componente (Externo -> Interno -> <div>) compartilha
+        # o MESMO caminho na árvore, mas cada um precisa da sua instância.
+        path_key = "/".join(own_path) + f"#{depth}"
         visited.add(path_key)
 
         instance = registry.get(path_key)
-        if instance is None:
+        if instance is None or instance.fn is not vnode.type:
+            # instância nova, ou o tipo mudou nesse slot (ex: um if/else
+            # trocando de componente) — nesse caso também é uma instância
+            # nova: os hooks não devem ser reaproveitados de um componente
+            # diferente.
+            if instance is not None:
+                instance.unmount()
             instance = ComponentInstance(vnode.type, session)
             registry[path_key] = instance
 
         with HookContext(instance):
-            rendered = instance.fn(vnode.props)
+            rendered = vnode.type(vnode.props)
 
         session.pending_effect_instances.append(instance)
         # componente é transparente: o resultado herda o mesmo caminho
-        return _resolve(rendered, own_path, registry, session, visited)
+        return _resolve(rendered, own_path, registry, session, visited, depth + 1)
 
     # elemento host: resolve os filhos recursivamente
+    # (só instâncias de componente entram em `visited`: misturar aqui o pyid
+    # do elemento fazia um componente trocado por um <em> no mesmo lugar
+    # nunca ser considerado removido)
     pyid = "/".join(own_path)
-    visited.add(pyid)
 
     new_props = dict(vnode.props)
     children = vnode.props.get("children", [])
     resolved_children = []
     for i, child in enumerate(children):
         segment = _child_slot(child, i)
-        child_path = own_path + [f"{i}:{segment}"]
+        child_path = own_path + [segment]
         resolved_children.append(_resolve(child, child_path, registry, session, visited))
 
     new_props["children"] = resolved_children

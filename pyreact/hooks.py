@@ -6,8 +6,13 @@ hooks em ordem de chamada — exatamente como o React faz. Por isso, hooks
 devem ser chamados sempre na mesma ordem, sem estarem dentro de if/for.
 """
 from __future__ import annotations
+import asyncio
 import contextvars
+import inspect
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 _current_instance: contextvars.ContextVar = contextvars.ContextVar("current_instance")
 
@@ -85,3 +90,34 @@ def use_memo(factory: Callable, deps: list) -> Any:
         slot["value"] = factory()
         slot["deps"] = deps
     return slot["value"]
+
+
+def use_interval(callback: Callable, seconds: float | None) -> None:
+    """Chama `callback` a cada `seconds` segundos enquanto o componente estiver
+    na tela — é o jeito mais simples de fazer *server push* (relógio,
+    dashboard ao vivo, polling).
+
+    - Sempre chama a versão MAIS RECENTE do callback, então ele pode ler o
+      estado atual sem cair no problema de closure velha.
+    - O callback pode ser `def` ou `async def`.
+    - `seconds=None` pausa o intervalo (o hook continua sendo chamado, só
+      não dispara nada).
+    - Uma exceção no callback é registrada no log e o intervalo continua.
+    """
+    if seconds is not None and seconds <= 0:
+        raise ValueError("use_interval: `seconds` precisa ser > 0 (ou None para pausar)")
+
+    latest = use_memo(lambda: {"callback": callback}, [])
+    latest["callback"] = callback
+
+    async def loop():
+        while True:
+            await asyncio.sleep(seconds)
+            try:
+                result = latest["callback"]()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Erro no callback de use_interval")
+
+    use_effect(loop if seconds is not None else (lambda: None), deps=[seconds])

@@ -4,7 +4,40 @@
 (function () {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const sessionId = window.__PYREACT_SESSION__;
-  const socket = new WebSocket(`${proto}//${location.host}/ws/${sessionId}`);
+  const SESSION_NOT_FOUND = 4404; // o servidor não conhece mais essa sessão
+  let socket = null;
+  let attempt = 0;
+
+  function connect() {
+    socket = new WebSocket(`${proto}//${location.host}/ws/${sessionId}`);
+
+    socket.addEventListener("open", () => {
+      attempt = 0;
+    });
+
+    socket.addEventListener("message", (msg) => {
+      const data = JSON.parse(msg.data);
+      if (data.type === "patches") {
+        data.patches.forEach(applyPatch);
+      } else if (data.type === "full") {
+        // ressincronização após reconectar: troca o conteúdo inteiro
+        document.getElementById("pyreact-root").innerHTML = data.html;
+      }
+    });
+
+    socket.addEventListener("close", (e) => {
+      if (e.code === SESSION_NOT_FOUND) {
+        // o servidor reiniciou (ou a sessão expirou): o estado se perdeu,
+        // então recarrega pra começar uma sessão nova
+        location.reload();
+        return;
+      }
+      // queda de rede/servidor: tenta de novo com espera crescente (1s, 2s, 4s... até 10s)
+      const delay = Math.min(1000 * 2 ** attempt, 10000);
+      attempt += 1;
+      setTimeout(connect, delay);
+    });
+  }
 
   function findByPyId(pyid) {
     return document.querySelector(`[data-pyid="${CSS.escape(pyid)}"]`);
@@ -54,17 +87,43 @@
         if (node) parent.removeChild(node);
         break;
       }
+      // --- patches endereçados por data-pyid (diff por key, listas) ---
+      case "remove": {
+        const el = findByPyId(patch.id);
+        if (el) el.remove();
+        break;
+      }
+      case "replace": {
+        const el = findByPyId(patch.id);
+        if (!el) return;
+        const tmp = document.createElement("template");
+        tmp.innerHTML = patch.html;
+        el.replaceWith(tmp.content.firstChild);
+        break;
+      }
+      case "insert_before": {
+        const parent = findByPyId(patch.parent_id) || document.body;
+        const ref = patch.ref_id ? findByPyId(patch.ref_id) : null;
+        const tmp = document.createElement("template");
+        tmp.innerHTML = patch.html;
+        parent.insertBefore(tmp.content.firstChild, ref);
+        break;
+      }
+      case "move": {
+        const el = findByPyId(patch.id);
+        const parent = findByPyId(patch.parent_id) || document.body;
+        if (!el) return;
+        const ref = patch.ref_id ? findByPyId(patch.ref_id) : null;
+        parent.insertBefore(el, ref); // mover um nó existente não perde seu estado no DOM (ex: foco, scroll)
+        break;
+      }
     }
   }
 
-  socket.addEventListener("message", (msg) => {
-    const data = JSON.parse(msg.data);
-    if (data.type === "patches") {
-      data.patches.forEach(applyPatch);
-    }
-  });
-
   function sendEvent(pyid, eventName, value) {
+    // sem conexão aberta o evento é descartado (a UI volta a responder
+    // assim que a reconexão acontecer)
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ pyid, event: eventName, value }));
   }
 
@@ -89,4 +148,6 @@
       true
     );
   });
+
+  connect();
 })();

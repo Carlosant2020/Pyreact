@@ -96,10 +96,38 @@ def test_listas_mantem_identidade_quando_a_ordem_nao_muda():
     assert ids1 == ids2
 
 
-def test_reordenar_lista_atualmente_muda_identidade_por_posicao():
-    """Documenta a limitação atual (ver README): o diff/identidade de filhos
-    é por posição, não por key — reordenar uma lista faz os itens serem
-    tratados como 'novos' na nova posição, em vez de movidos."""
+def test_trocar_tipo_de_componente_no_mesmo_slot_reseta_o_estado():
+    """Se um if/else troca qual componente aparece numa mesma posição da
+    árvore, a instância antiga não pode ser reaproveitada — senão os hooks
+    do componente errado (ou hooks incompatíveis) vazariam pro novo."""
+    def ComponenteA(props):
+        count, set_count = use_state(100)
+        return h("span", None, f"A:{count}")
+
+    def ComponenteB(props):
+        count, set_count = use_state(0)
+        return h("span", None, f"B:{count}")
+
+    def Raiz(props):
+        usar_a, set_usar_a = use_state(True)
+        return h("div", None, h(ComponenteA if usar_a else ComponenteB, None))
+
+    session = Session(Raiz)
+    tree1 = resolve_tree(h(Raiz, {}), session)
+    assert tree1.children[0].children[0].props["nodeValue"] == "A:100"
+
+    raiz_instance = next(i for i in session.instances.values() if i.fn is Raiz)
+    raiz_instance.hooks[0]["value"] = False  # troca pra ComponenteB
+
+    tree2 = resolve_tree(h(Raiz, {}), session)
+    assert tree2.children[0].children[0].props["nodeValue"] == "B:0"  # estado do zero, não "herdou" o 100
+
+
+def test_reordenar_lista_agora_mantem_identidade_por_key():
+    """Antes, reordenar mudava a identidade (limitação documentada). Agora,
+    com o path baseado só na key (sem prefixo de índice), a identidade
+    segue o item, não a posição — pré-requisito pro diff conseguir gerar
+    'move' em vez de recriar os itens."""
     def Item(props):
         return h("li", {"key": props.get("item_id")}, props["label"])
 
@@ -117,5 +145,4 @@ def test_reordenar_lista_atualmente_muda_identidade_por_posicao():
     tree2 = resolve_tree(b, session)
     pyid_de_x_depois = tree2.children[1].props["data-pyid"]  # x agora está na posição 1
 
-    # limitação atual: o pyid do item 'x' muda ao mudar de posição
-    assert pyid_de_x_antes != pyid_de_x_depois
+    assert pyid_de_x_antes == pyid_de_x_depois
